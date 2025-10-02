@@ -10,10 +10,75 @@ import json
 
 class PromptRequest(BaseModel):
     prompt: str
+    user_mail: str
     persona: Optional[str] = None
     language: Optional[str] = None  # e.g., "thai" or "th"
 
+
+class UserRequest(BaseModel):
+    email: str
+
 app = FastAPI()
+
+def get_data_from_file(mail: str):
+    # open data_dashbord.json and query data by mail
+    with open('data_dashbord.json', 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    return data.get(mail, {})
+
+
+def user_info(email: str) -> dict:
+    """
+    Search for user records by email in data_dashbord.json.
+    Returns the 10 most recent records sorted by timestamp (newest first).
+    
+    Args:
+        email: User email to search for
+        
+    Returns:
+        dict with email, total_count, returned_count, and users list
+        
+    Raises:
+        HTTPException: If file not found, read error, or no matching users
+    """
+    from pathlib import Path
+    
+    # Path to the JSON file
+    json_path = Path(__file__).parent / "data_dashbord.json"
+    
+    if not json_path.exists():
+        raise HTTPException(status_code=500, detail="Data file not found")
+    
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read data file: {e}")
+    
+    # Search through leaderboard for matching email
+    leaderboard = data.get("leaderboard", {})
+    
+    matching_users = []
+    for key, user_data in leaderboard.items():
+        if user_data.get("mail") == email:
+            # Include the key/id in the response
+            user_data["id"] = key
+            matching_users.append(user_data)
+    
+    if not matching_users:
+        raise HTTPException(status_code=404, detail=f"No user found with email: {email}")
+    
+    # Sort by timestamp (newest first) and take only the 25 most recent
+    matching_users.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+    top_25 = matching_users[:25]
+
+    return {
+        "email": email,
+        "total_count": len(matching_users),
+        "returned_count": len(top_25),
+        "users": top_25
+    }
+
 
 # Load environment variables from .env if present
 load_dotenv()
@@ -30,6 +95,21 @@ def read_root():
     return {"Hello": "World"}
 
 
+@app.get("/user")
+async def get_user(email: str = Query(..., description="User email to search for")):
+    """
+    Read data_dashbord.json and return user record matching the provided email.
+    """
+    return user_info(email)
+
+
+
+@app.get("/user/{mail}")
+def read_user(mail: str):
+    user_data = get_data_from_file(mail)
+    if not user_data:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user_data
 
 # POST method for /call
 ONGOR_PERSONA = (
@@ -158,17 +238,49 @@ async def call_gemini(
     prompt: Optional[str] = Query(default=None),
     persona: Optional[str] = Query(default=None),
     language: Optional[str] = Query(default=None, alias="lang"),
+    user_mail: Optional[str] = Query(default=None),
 ):
     """Call Gemini with a simple prompt and return the generated text."""
     # Prefer JSON body, then query string fallback
     prompt_value: Optional[str] = None
+    user_mail_value: Optional[str] = None
+    
     if body and isinstance(body.prompt, str):
         prompt_value = body.prompt
+        user_mail_value = body.user_mail if hasattr(body, 'user_mail') and body.user_mail else None
     elif isinstance(prompt, str):
         prompt_value = prompt
+        user_mail_value = user_mail
 
     if not prompt_value or not prompt_value.strip():
         raise HTTPException(status_code=400, detail="Provide 'prompt' in JSON body or as ?prompt= query param")
+
+    # Fetch user history if user_mail is provided
+    user_history_context = ""
+    if user_mail_value:
+        try:
+            user_data = user_info(user_mail_value)
+            users = user_data.get("users", [])
+            
+            if users:
+                # Build history summary
+                history_lines = ["User's Recent Game History (Last 10 plays):"]
+                for idx, record in enumerate(users, 1):
+                    timestamp = record.get("timestamp", 0)
+                    score = record.get("score", 0)
+                    name = record.get("name", "Unknown")
+                    username = record.get("username", "")
+                    
+                    # Convert timestamp to readable date
+                    from datetime import datetime
+                    date_str = datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M")
+                    
+                    history_lines.append(f"  {idx}. Date: {date_str}, Score: {score}, Name: {name}, Username: {username}")
+                
+                user_history_context = "\n" + "\n".join(history_lines) + "\n"
+        except HTTPException:
+            # If user not found, continue without history
+            pass
 
     # Persona selection: prefer body.persona, then query param, then default Ongor
     persona_value: str = (
@@ -193,8 +305,8 @@ async def call_gemini(
             # Generic directive for other languages if provided
             lang_directive = f"\nRespond in {lang_value_raw} only."
 
-    # Compose final prompt with persona and language guidance
-    composed_prompt = f"{persona_value}{lang_directive}\n\nUser: {prompt_value}\nน้องอ่องออ :"
+    # Compose final prompt with persona, user history, and language guidance
+    composed_prompt = f"{persona_value}{lang_directive}{user_history_context}\n\nUser: {prompt_value}\nน้องอ่องออ :"
 
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:

@@ -1,6 +1,21 @@
 # OngOrRAGs
 
-Simple FastAPI service exposing a /call endpoint that proxies a prompt to Google's Gemini via `google-genai` and returns generated text.
+Simple FastAPI service exposing Example:
+
+```
+# Get user by email
+curl -s 'http://localhost:8000/user?email=ongor.fun@gmail.com'
+
+# Call Gemini without user history
+curl -s -X POST http://localhost:8000/call \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"hello gemini"}'
+
+# Call Gemini with user history (personalized response)
+curl -s -X POST http://localhost:8000/call \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"How am I doing?","user_mail":"ongor.fun@gmail.com","language":"thai"}'
+```ll endpoint that proxies a prompt to Google's Gemini via `google-genai` and returns generated text.
 
 ## Quick start
 
@@ -34,11 +49,16 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 ## API
 
-- POST /call
-	- Request body: `{ "prompt": "hello gemini", "persona": "optional persona override", "language": "thai" }`
-	- Response: `{ "text": "...model output..." }`
+- GET /user
+  - Query parameter: `email` (required)
+  - Returns: Top 10 most recent user records matching the email from data_dashbord.json (sorted by timestamp, newest first)
+  - Example: `GET /user?email=ongor.fun@gmail.com`
 
-Example:
+- POST /call
+  - Request body: `{ "prompt": "hello gemini", "user_mail": "ongor.fun@gmail.com", "persona": "optional persona override", "language": "thai" }`
+  - Query parameters: `prompt`, `user_mail`, `persona`, `lang` (all optional if using JSON body)
+  - If `user_mail` is provided, the user's 10 most recent game history records will be included in the context sent to Gemini
+  - Response: `{ "text": "...model output..." }`Example:
 
 ```
 curl -s -X POST http://localhost:8000/call \
